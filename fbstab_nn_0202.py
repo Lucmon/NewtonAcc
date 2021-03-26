@@ -17,7 +17,6 @@ from easydict import EasyDict as edict
 #from nn_modules import aggregator_lookup, prep_lookup, sampler_lookup
 from torch.nn import functional as F
 from MultiHeadAttention import MultiheadAttention
-from CoordAttention import CoordAttention
 from CoCoAttention import CoCoAttention
 import torch.nn.init as init
 import shutil
@@ -363,7 +362,7 @@ class ConstraintHealNet(nn.Module):
         self.affine_bias = Parameter(torch.empty(1))
         self.affine_coef = Parameter(torch.empty(1))
         #self.norm_bias = Parameter(torch.empty(1))
-        self.coord_att = CoordAttention(embed_dim=2, num_heads=1, dropout=0.2)
+        #self.coord_att = CoordAttention(embed_dim=2, num_heads=1, dropout=0.2)
         self.coord_embed = nn.Sequential(
                             nn.Linear(2, 64),
                             #nn.Tanh(),
@@ -406,8 +405,8 @@ class ConstraintHealNet(nn.Module):
         #key = (key2 - torch.mean(key2)) / torch.var(key2)
         key = key2
         print("before attention:")
-        print(torch.var(key2))
-        print(np.percentile(torch.mean(key, dim = 1).detach().cpu().numpy(), [0,20,40,60,80,100]))
+        #print(torch.var(key2))
+        print(np.percentile(torch.sum(key, dim = 1).detach().cpu().numpy(), [0,20,40,60,80,100]))
         print("d argmax before attention:",torch.sum(key2.squeeze(), dim = 1)[vlt_argmax])
         if cfg.logging:
             torch.cuda.synchronize()
@@ -571,7 +570,7 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
     constraint_num_list = []
     dz = torch.zeros(c_feature.shape[1])
     for j in range(max_inner_iters):
-        #print("== Inner iter: {} ==".format(j))
+        print("== Inner iter: {} ==".format(j))
         CHNet.train()
 
         y = qp.b - torch.matmul(qp.A, z)
@@ -581,6 +580,7 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
         y_prox = 100 - y_far - y_violated
         y_sat = float(torch.sum (y > -1e-5)) / y.shape[0] * 100
 
+        print("Calculating Residual...")
         if cfg.data_type == "simulation":
             r1 = -(torch.matmul(qp.H, z)+torch.matmul(qp.G.t(),_lambda)\
                 +torch.matmul(qp.A.t(), v) + qp.f)
@@ -597,56 +597,33 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
         all_vlt = torch.abs(r3)
         print("R percentile:{}".format(nR.item()))
         print(np.percentile(R.detach().numpy(),[0,10,30,50,70,90,100]))
+        print("r3 percentile:", np.percentile(r3.detach().numpy(),[0,10,30,50,70,90,100]))
         nR_list.append(float(nR))
+        vlt_argmax = torch.argmax(torch.abs(r3).squeeze())
+        print("residual max:", r3[vlt_argmax])
+        print("original y at argamx:", y[vlt_argmax])
+        print("original v at argamx:", v[vlt_argmax])
         
         end_time = time.time()
 
         #update network
         if niters >= 1:
             optimizer.zero_grad()
-            #SageNet.optimizer.zero_grad()
-            #print("d:")
-            #print(d.squeeze())
-            #print("d true:")
-            #print(d_true.squeeze())
-            print("distance of d and d true")
+            print("distance of d and d_gt")
             print(np.percentile(torch.abs(d-d_true).detach().numpy(), [0,10,30,50,70,90,100]))
             imitation_loss = torch.nn.MSELoss()(d, d_true)
-            print("Selected Constraints:{}/{} Max SCH:{}".format(torch.sum(S_ch>0.5), S_ch.shape[0], torch.max(S_ch)))
-            constraint_num_list.append(int(torch.sum(S_ch>0.5)))
-            special_indices=torch.LongTensor(np.where(S_ch > 0.5))
-            special_idx_arr_2 = (S_ch > 0.5).float()
-            #ch_vlt = torch.max(-y, -v)[special_indices]
-            #all_vlt = torch.max(-y, -v)
-            ch_vlt = all_vlt[special_indices]
-            print("All Violation:", np.percentile(all_vlt.detach().numpy(),[0,10,30,50,70,90,100]))
-            if torch.sum(special_idx_arr_2) > 0:
-                print("Violation selected by S_ch:", np.percentile(ch_vlt.detach().numpy(),[0,10,30,50,70,90,100]))
-            else:
-                print("None is choosed by S_ch!")
 
-            overlap_indices = torch.min(special_idx_arr, special_idx_arr_2)
-            print("overlap num: {} idx1: {} idx2: {}".format(torch.sum(overlap_indices), torch.sum(special_idx_arr), torch.sum(special_idx_arr_2)))
-            #print("Inequality: satisfied: {:.2f}% proximal: {:.2f}% violated: {:.2f}%".format(y_sat, y_prox, y_violated))
-            #print("Inner iter: {} Residual Norm: {} time:{}".format(j, nR, end_time - start_time))
-            
-            special_idx_arr = special_idx_arr_2
             l1Loss = torch.mean(torch.abs(S_ch))
             nRLoss = nR
             #d_target = torch.topk(all_vlt, all_vlt.shape[0] // 5)[1].long()
             d_target = (all_vlt > 1e-6).squeeze().float().detach()
-            print("d target num:",torch.sum(d_target))
+            print("violated num in r3:",torch.sum(d_target))
             bceloss = F.binary_cross_entropy_with_logits(d_scores, d_target)
             #print(d)
             #print(x_iterate_gt-torch.cat([z,_lambda,v], dim=0))
             #print("d_opt:")
             #print(d_opt)
             gt_loss = torch.nn.MSELoss()(d.squeeze(), d_opt) #g
-            print("---d shape---")
-            print(d.shape)
-            print(d_true.shape)
-            print(d_opt.shape)
-            print("------")
             #gt_loss = torch.sum(d_opt * d.squeeze()) / (torch.norm(d) * torch.norm(d_opt))
             #print("S_ch:", np.percentile(S_ch.detach().numpy(),[0,10,30,50,70,90,100]))
             print("Inner iter: {} Imitation loss: {} l1 loss: {} Residual Norm: {} gt loss: {} BCELoss: {}".format(j, imitation_loss.item(), l1Loss.item(), nR, gt_loss.item(), bceloss.item()))
@@ -670,8 +647,8 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
                 print(p[1].grad)
                 print(p[1])
             """
-            print("TOTAL NORM:", total_norm)
-
+            print("BackProp....")
+            print("Gradient TOTAL NORM:", total_norm)
             optimizer.step()
             scheduler.step()
 
@@ -689,13 +666,31 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
         #x_iterate = torch.cat([z,v], dim=0)
         x_iterate = z
         # CHNet for finding constraints
-        vlt_argmax = torch.argmax(r3.squeeze())
+        vlt_argmax = torch.argmax(torch.abs(r3).squeeze())
+        print("Selecting Constraints...")
         d_scores, S_ch, _ = CHSelect(CHNet, c_feature, x_iterate, y, v, dz,special_indices,vlt_argmax)
+        
         #S_ch = torch.zeros(S_ch.shape)
         #S_ch_idx = torch.multinomial(torch.ones(S_ch.shape), int(S_ch.shape[0]//2))
         #S_ch[S_ch_idx] = 1
         print("S_ch:")
         print(np.percentile(S_ch.detach().numpy(), [0,10,30,50,70,90,100]))
+
+        print("Selected Constraints:{}/{} Max SCH:{}".format(torch.sum(S_ch>0.5), S_ch.shape[0], torch.max(S_ch)))
+        constraint_num_list.append(int(torch.sum(S_ch>0.5)))
+        special_indices=torch.LongTensor(np.where(S_ch > 0.5))
+        special_idx_arr_2 = (S_ch > 0.5).float()
+        ch_vlt = all_vlt[special_indices]
+        print("All Violation:", np.percentile(all_vlt.detach().numpy(),[0,10,30,50,70,90,100]))
+        if torch.sum(special_idx_arr_2) > 0:
+            print("Violation selected by S_ch:", np.percentile(ch_vlt.detach().numpy(),[0,10,30,50,70,90,100]))
+        else:
+            print("None is choosed by S_ch!")
+
+        overlap_indices = torch.min(special_idx_arr, special_idx_arr_2)
+        print("overlap num: {} idx1: {} idx2: {}".format(torch.sum(overlap_indices), torch.sum(special_idx_arr), torch.sum(special_idx_arr_2)))
+        special_idx_arr = special_idx_arr_2
+
         gamma_true, mu_true = dphi(y,v,alpha)
         gamma, mu = dphi_indexed(y,v,alpha,S_ch)
         #print("GAMMA and MU:")
@@ -791,6 +786,7 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
         if cfg._clamp_v:
             d_opt = torch.clamp(d_opt, -0.1, 0.1)
 
+        print("Updating Variables...")
         t = 1
         z = z + t* dz
         v = v + t* dv
@@ -1226,14 +1222,14 @@ if __name__ == '__main__':
     #Hs = np.load("instances/qp_H.npy")
     #fs = np.load("instances/qp_f.npy")
     prefix = "/home/chenzhijie/"
-    init_dir = "/mnt/nas/home/chenzhijie/research/newtonacc/logs/svm/init/"
+    init_dir = prefix + "research/newtonacc/logs/svm/init/"
     constraints = []
     file_name_list = []
     x_iterate_gt = []
     x_inits = []
     #v_inits = []
     if cfg.data_type == "svm":
-        data_dir = "/home/chenzhijie/research/newtonacc/data/svm/split"
+        data_dir = prefix + "research/newtonacc/data/svm/split"
         """
         files = os.listdir(data_dir)
         for filename in files:
@@ -1278,8 +1274,8 @@ if __name__ == '__main__':
     start_time_str = time.strftime("%Y-%m-%d-%H:%M:%S", timeArray)
     sys.stdout = Logger(start_time_str)
     if cfg.train:
-        os.mkdir("/home/chenzhijie/research/newtonacc/model/"+start_time_str)
-    os.mkdir("/home/chenzhijie/research/newtonacc/results/svm/"+start_time_str)
+        os.mkdir(prefix + "research/newtonacc/model/"+start_time_str)
+    os.mkdir(prefix + "research/newtonacc/results/svm/"+start_time_str)
     shutil.copyfile('fbstab_nn_0202.py', 'logs/fbstab_nn_0202_'+start_time_str+'.py')
     nR_list_arr = []
     obj_list_arr = []
@@ -1341,7 +1337,7 @@ if __name__ == '__main__':
                 obj = x.t() @ qp.H @ x + x.t() @ qp.f
                 obj_list.append(float(obj[0][0]))
             if (epoch+1)%1==0:
-                torch.save(CHNet.state_dict(), "/home/chenzhijie/research/newtonacc/model/"+start_time_str+"/CHNet_"+str(epoch+1)+".pt")
+                torch.save(CHNet.state_dict(), prefix + "research/newtonacc/model/"+start_time_str+"/CHNet_"+str(epoch+1)+".pt")
                 #sys.exit()
                 #print(qp.G @ x - qp.h)
                 #print(qp.A @ x + qp.b)
@@ -1353,15 +1349,15 @@ if __name__ == '__main__':
     
 
     if cfg.cuda and cfg.train:
-        CHNet.load_state_dict(torch.load('/home/chenzhijie/research/newtonacc/model/'+start_time_str+'/CHNet_8.pt', map_location=lambda storage, loc: storage.cuda(1)))
+        CHNet.load_state_dict(torch.load(prefix+'research/newtonacc/model/'+start_time_str+'/CHNet_8.pt', map_location=lambda storage, loc: storage.cuda(1)))
         CHNet.cuda()
     elif cfg.train:
-        CHNet.load_state_dict(torch.load("/home/chenzhijie/research/newtonacc/model/"+start_time_str+"/CHNet_10.pt"))
+        CHNet.load_state_dict(torch.load(prefix+"research/newtonacc/model/"+start_time_str+"/CHNet_10.pt"))
     elif cfg.cuda:
-        CHNet.load_state_dict(torch.load('/home/chenzhijie/research/newtonacc/model/2021-03-22-14:58:59/CHNet_6.pt', map_location=lambda storage, loc: storage.cuda(1)))
+        CHNet.load_state_dict(torch.load(prefix+'research/newtonacc/model/2021-03-22-14:58:59/CHNet_6.pt', map_location=lambda storage, loc: storage.cuda(1)))
         CHNet.cuda()
     else:
-        CHNet.load_state_dict(torch.load("/home/chenzhijie/research/newtonacc/model/2021-02-21-06:40:51/CHNet_1.pt"))
+        CHNet.load_state_dict(torch.load(prefix+"research/newtonacc/model/2021-02-21-06:40:51/CHNet_1.pt"))
 
     cfg.train = False
     
@@ -1415,11 +1411,11 @@ if __name__ == '__main__':
         obj = x.t() @ qp.H @ x + x.t() @ qp.f
         obj_list.append(float(obj[0][0]))
 
-        np.save("/home/chenzhijie/research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_nR.npy",np.array(nR_list_arr[-1]))
-        np.save("/home/chenzhijie/research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_obj.npy",np.array(obj_list_arr[-1]))
-        np.save("/home/chenzhijie/research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_constraint.npy",np.array(constraint_num_list_arr[-1]))
-        np.save("/home/chenzhijie/research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_x_iterate.npy",np.array(x_list_arr[-1]))
-        np.save("/home/chenzhijie/research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_v_iterate.npy",np.array(v_list_arr[-1]))
+        np.save(prefix+"research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_nR.npy",np.array(nR_list_arr[-1]))
+        np.save(prefix+"research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_obj.npy",np.array(obj_list_arr[-1]))
+        np.save(prefix+"research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_constraint.npy",np.array(constraint_num_list_arr[-1]))
+        np.save(prefix+"research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_x_iterate.npy",np.array(x_list_arr[-1]))
+        np.save(prefix+"research/newtonacc/results/svm/"+start_time_str+"/"+file_name_list[i]+"_v_iterate.npy",np.array(v_list_arr[-1]))
 
     end_time = time.time()
     print("Total Time:{}".format(end_time-start_time))

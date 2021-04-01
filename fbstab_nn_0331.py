@@ -13,7 +13,7 @@ import numpy as np
 import random
 seed = 0
 random.seed(seed) # Python random module.
-from scipy.sparse import random
+from scipy.sparse import random as scipy_random
 from easydict import EasyDict as edict
 
 #from graphsage import GSSupervised
@@ -44,7 +44,7 @@ __C.TRAIN.MOMENTUM = 0.9 #g
 __C.logging = False
 __C.cuda = True
 __C.output = True
-__C.train = False
+__C.train = True
 __C._use_linformer = False #g
 __C._att_dropout = 0.2 #g
 __C.kdim = 8 # 32, 128, 256
@@ -53,6 +53,8 @@ __C.double_attention = False
 __C._use_gt_loss = False
 __C._surrogate_func =True
 __C._gumbel_softmax = True
+__C._sample_with_decay = True
+__C._accumulate_model_update = True
 __C._clamp_v = False
 __C._proj_dropout = True
 __C._newton_iters_prelearn = -1
@@ -542,13 +544,13 @@ def smw_inverse(A,U,V):
     s = V.shape[0]
     return A-A@U@torch.inverse(torch.eye(s).cuda()+V@A@U)@V@A
 
-def set_epoch(self, epoch):
-    if self.epoch_decay is True:
-        probs = decay_prob(epoch, k=cfg._epoch_decay_k)
+def set_epoch(epoch):
+    if cfg._sample_with_decay is True:
+        probs = decay_prob(epoch)
         print('swith to epoch {}, prob. -> {}'.format(epoch, probs))
     return probs
 
-def decay_prob(self, i, or_type=3, k=3000):
+def decay_prob(i, or_type=3, k=3000):
     if or_type == 1:  # Linear decay
         or_prob_begin, or_prob_end = 1., 0.
         or_decay_rate = (or_prob_begin - or_prob_end) / 10.
@@ -562,11 +564,11 @@ def decay_prob(self, i, or_type=3, k=3000):
             print('[Linear] decay schedule sampling probability to {}'.format(prob_i))
 
     elif or_type == 2:  # Exponential decay
-        prob_i = numpy.power(k, i)
+        prob_i = np.power(k, i)
         print('[Exponential] decay schedule sampling probability to {}'.format(prob_i))
 
     elif or_type == 3:  # Inverse sigmoid decay
-        prob_i = k / (k + numpy.exp((i / k)))
+        prob_i = k / (k + np.exp((i / k)))
         # print('[Inverse] decay schedule sampling probability to {}'.format(prob_i))
     #self.probs = prob_i
     return prob_i
@@ -581,7 +583,7 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
     lnm = 5
     lsmax = 20
     mrec = torch.zeros([lnm,1])
-    max_inner_iters = 100
+    max_inner_iters = 50
     eta = 1e-8
     beta = 0.7
     
@@ -661,17 +663,19 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
                 loss = imitation_loss +nRLoss  #+ l1Loss #+ nRLoss #g gt_loss 
             else:
                 loss = imitation_loss + bceloss
+
             loss.backward()
-            """
-            for name,param in CHNet.named_parameters():
-                print('层:',name,param.size())
-                print('权值梯度',param.grad)
-            """
-            total_norm = torch.nn.utils.clip_grad_norm(CHNet.parameters(), 1e2)
-            print("Back Propagating....")
-            print("Gradient TOTAL NORM:", total_norm)
-            optimizer.step()
-            scheduler.step()
+            if not cfg._accumulate_model_update:
+                print("Instantaneous Model Update.")
+                """
+                for name,param in CHNet.named_parameters():
+                    print('层:',name,param.size())
+                    print('权值梯度',param.grad)
+                """
+                total_norm = torch.nn.utils.clip_grad_norm(CHNet.parameters(), 1e2)
+                print("Back Propagating....")
+                print("Gradient TOTAL NORM:", total_norm)
+                optimizer.step()
 
             r1.detach_()
             r3.detach_()
@@ -699,7 +703,7 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
         print(np.percentile(S_ch.detach().numpy(), [0,10,30,50,70,90,100]))
 
         if cfg._gumbel_softmax:
-            S_ch = F.gumbel_softmax(torch.cat([S_ch, -S_ch], dim=1), hard=True)[:, 0]
+            S_ch = F.gumbel_softmax(torch.stack([S_ch, -S_ch], dim=1), hard=True)[:, 0]
 
         print("Selected Constraints:{}/{} Max SCH:{}".format(torch.sum(S_ch>0.5), S_ch.shape[0], torch.max(S_ch)))
         constraint_num_list.append(int(torch.sum(S_ch>0.5)))
@@ -795,9 +799,11 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
         elif cfg.data_type == "svm":
             if cfg._sample_with_decay:
                 p = random.random()
-                if p > probs:
+                if p > cfg.tf_probs:
+                    print("Free update...")
                     [dz, dv] = torch.split(d,[n,q])
                 else:
+                    print("Teacher Forcing...")
                     [dz, dv] = torch.split(d_true, [n,q])
             else:
                 [dz, dv] = torch.split(d,[n,q])
@@ -825,6 +831,19 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
         print("MEAN WITH GT:", torch.mean(abs(z.squeeze() - x_iterate_gt[:qp.H.shape[0]])) )
         niters = niters+1
     v = torch.max(torch.zeros(v.size()),v)
+
+    if cfg._accumulate_model_update:
+        print("Accumulated Model Update.")
+        """
+        for name,param in CHNet.named_parameters():
+            #print('层:',name,param.size())
+            #print('权值梯度',param.grad)
+            #param.grad = param.grad / 30
+        """
+        total_norm = torch.nn.utils.clip_grad_norm(CHNet.parameters(), 1e2)
+        print("Back Propagating....")
+        print("Gradient TOTAL NORM:", total_norm)
+        optimizer.step()
 
     return z, _lambda, v, niters, inverse_time, nR, nR_list, obj_list,constraint_num_list,x_list,v_list,imit_loss_list,bce_loss_list
 
@@ -1324,6 +1343,7 @@ if __name__ == '__main__':
     
     if cfg.train:
         for epoch in range(100):
+            cfg.tf_probs = set_epoch(epoch)
             for i in range(25):
                 print("Start Training...Epoch:{} w{}a_{}".format(epoch, i//5, i%5+1))
                 #H = torch.randn([m*n, m*n])
@@ -1383,6 +1403,7 @@ if __name__ == '__main__':
                 #print(qp.G @ x - qp.h)
                 #print(qp.A @ x + qp.b)
                 #nR_list.append(nR)
+            scheduler.step()
         
     #torch.save(CHNet.state_dict(), "/home/chenzhijie/research/newtonacc/model/CHNet.pt")
     #CHNet.load_state_dict(torch.load("/home/chenzhijie/research/newtonacc/model/2021-01-29-08:08:57/CHNet_50.pt"))

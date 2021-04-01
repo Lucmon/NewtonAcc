@@ -770,14 +770,9 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
             K_inv_true = torch.inverse(K)
             end_time_inv = time.time()
             inverse_time += end_time_inv - start_time_inv
-            #d_true = torch.matmul(K_inv_true, torch.cat([R[:n], R[n:][S_ch_idx]]))
+
             d_true = torch.matmul(K_inv_true, R)
             d_true.detach_()
-            #[dz_true, dv_true] = torch.split(d_true,[n,q])
-            #[dz_true, dv_true] = torch.split(d_true,[n,S_ch_idx.shape[0]])
-            #dv_true_temp = torch.zeros([q,1])
-            #dv_true_temp[S_ch_idx] = dv_true
-            #d_true = torch.cat([dz_true, dv_true_temp])
 
             # CHNet K
             K = torch.cat([
@@ -1375,9 +1370,15 @@ if __name__ == '__main__':
                     lambda0 = torch.rand([1,1])
                 #v0 = torch.rand([qp.A.shape[0],1])
                 
+                """
+                load initial values from local
+                
                 [x0, v0] = torch.split(x_inits[i], [constraints[i].shape[1], qp.A.shape[0]])
                 x0 = x0.unsqueeze(1)
                 v0 = v0.unsqueeze(1)
+                """
+                x0 = torch.rand([constraints[i].shape[1],1])
+                v0 = torch.rand([qp.A.shape[0], 1])
                 #print("===nR:===")
                 #print(nr(x0,lambda0,v0,qp))
                 #sys.exit()

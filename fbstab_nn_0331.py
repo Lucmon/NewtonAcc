@@ -44,7 +44,7 @@ __C.TRAIN.MOMENTUM = 0.9 #g
 __C.logging = False
 __C.cuda = True
 __C.output = True
-__C.train = True
+__C.train = False
 __C._use_linformer = False #g
 __C._att_dropout = 0.2 #g
 __C.kdim = 8 # 32, 128, 256
@@ -545,9 +545,10 @@ def smw_inverse(A,U,V):
     return A-A@U@torch.inverse(torch.eye(s).cuda()+V@A@U)@V@A
 
 def set_epoch(epoch):
+    probs = 1
     if cfg._sample_with_decay is True:
-        probs = decay_prob(epoch)
-        print('swith to epoch {}, prob. -> {}'.format(epoch, probs))
+        probs = decay_prob(epoch, k =8)
+        print('switch to epoch {}, prob. -> {}'.format(epoch, probs))
     return probs
 
 def decay_prob(i, or_type=3, k=3000):
@@ -1009,12 +1010,13 @@ def pfb_test(qp, z, _lambda, v, sigma, inner_tol, alpha, niters, max_iters, inve
 
         cfg._index_num_bound = int(qp.A.shape[0] / 5)
         if j > cfg._newton_iters_prelearn and len(indices_selected) > cfg._index_num_bound: #g
-            indices_selected = torch.topk(S_ch, cfg._index_num_bound)[1] #.detach().numpy()
+           #indices_selected = torch.topk(S_ch, cfg._index_num_bound)[1] #.detach().numpy()
+           indices_selected = torch.LongTensor(np.where(S_ch > 0.5))
 
         # hard argmax
         if cfg.output:
             constraint_num_list.append(torch.sum(indices_selected))
-        #print("Selected Constraints:{}/{} Max SCH:{}".format(len(indices_selected), S_ch.shape[0], torch.max(S_ch)))
+        print("Selected Constraints:{}/{} Max SCH:{}".format(len(indices_selected), S_ch.shape[0], torch.max(S_ch)))
         S_ch = torch.zeros(S_ch.shape)
         #S_ch[indices_selected] = 1
         
@@ -1067,7 +1069,8 @@ def pfb_test(qp, z, _lambda, v, sigma, inner_tol, alpha, niters, max_iters, inve
         
         #gamma,mu,L_l, L_r = dphi_smw(y,v,alpha,S_ch) # 输入
         dphi_start_time = time.time()
-        gamma,mu, L_l, L_r = dphi_smw(y,v,alpha,S_ch,protype)
+        #gamma,mu, L_l, L_r = dphi_smw(y,v,alpha,S_ch,protype)
+        gamma,mu = dphi_indexed(y,v,alpha,S_ch)
         dphi_end_time = time.time()
         chnet_time[1] += dphi_end_time - dphi_start_time
         #print("gamma indexed:", gamma_indexed)
@@ -1310,7 +1313,7 @@ if __name__ == '__main__':
     
     # CHNet
     CHNet = ConstraintHealNet(kdim=cfg.kdim)
-    CHNet.load_state_dict(torch.load(prefix+"research/newtonacc/model/2021-03-28-00:24:37/CHNet_40.pt"))
+    #CHNet.load_state_dict(torch.load(prefix+"research/newtonacc/model/2021-03-28-00:24:37/CHNet_40.pt"))
 
     optimizer = optim.SGD(CHNet.parameters(), lr=cfg.TRAIN.LR, momentum=cfg.TRAIN.MOMENTUM, nesterov=True)
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer,
@@ -1417,7 +1420,7 @@ if __name__ == '__main__':
     elif cfg.train:
         CHNet.load_state_dict(torch.load(prefix+"research/newtonacc/model/"+start_time_str+"/CHNet_10.pt"))
     elif cfg.cuda:
-        CHNet.load_state_dict(torch.load(prefix+'research/newtonacc/model/2021-03-28-00:24:37/CHNet_40.pt', map_location=lambda storage, loc: storage.cuda(0)))
+        CHNet.load_state_dict(torch.load(prefix+'research/newtonacc/model/2021-04-01-15:00:28/CHNet_40.pt', map_location=lambda storage, loc: storage.cuda(0)))
         CHNet.cuda()
     else:
         CHNet.load_state_dict(torch.load(prefix+"research/newtonacc/model/2021-02-21-06:40:51/CHNet_1.pt"))

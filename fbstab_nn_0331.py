@@ -44,7 +44,7 @@ __C.TRAIN.MOMENTUM = 0.9 #g
 __C.logging = False
 __C.cuda = True
 __C.output = True
-__C.train = False
+__C.train = True
 __C._use_linformer = False #g
 __C._att_dropout = 0.2 #g
 __C.kdim = 8 # 32, 128, 256
@@ -499,7 +499,8 @@ class ConstraintHealNet(nn.Module):
         if cfg.logging:
             sigmoid_start_time = time.time()
             torch.cuda.synchronize()
-        d_percentile = torch.sigmoid(d)
+        #d_percentile = torch.sigmoid(d)
+        d_percentile = d
         #d_percentile = (d_percentile - torch.min(d_percentile).detach()) / (1 - torch.min(d_percentile).detach())
         #d_percentile = (d_percentile - torch.min(d_percentile).detach()) / (torch.max(d_percentile).detach() - torch.min(d_percentile).detach())
         #d_percentile = F.relu(torch.tanh(d_percentile))

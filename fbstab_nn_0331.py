@@ -53,7 +53,7 @@ __C.double_attention = False
 __C._use_gt_loss = False
 __C._surrogate_func =True
 __C._gumbel_softmax = True
-__C._sample_with_decay = True
+__C._sample_with_decay = False
 __C._accumulate_model_update = True
 __C._clamp_v = False
 __C._proj_dropout = True
@@ -546,7 +546,7 @@ def smw_inverse(A,U,V):
     return A-A@U@torch.inverse(torch.eye(s).cuda()+V@A@U)@V@A
 
 def set_epoch(epoch):
-    probs = 1
+    probs = 0
     if cfg._sample_with_decay is True:
         probs = decay_prob(epoch, k =8)
         print('switch to epoch {}, prob. -> {}'.format(epoch, probs))
@@ -610,17 +610,18 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
 
     constraint_num_list = []
     dz = torch.zeros(c_feature.shape[1])
+    optimizer.zero_grad()
     for j in range(max_inner_iters):
         print("== Inner iter: {} ==".format(j))
         CHNet.train()
 
         y = qp.b - torch.matmul(qp.A, z)
-
+        """
         y_far = float(torch.sum(y > 1e-3)) / y.shape[0] * 100
         y_violated = float(torch.sum(y < -1e-5)) / y.shape[0] * 100
         y_prox = 100 - y_far - y_violated
         y_sat = float(torch.sum (y > -1e-5)) / y.shape[0] * 100
-
+        """
         print("Calculating Residual...")
         if cfg.data_type == "simulation":
             r1 = -(torch.matmul(qp.H, z)+torch.matmul(qp.G.t(),_lambda)\
@@ -649,7 +650,6 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
 
         #update network
         if niters >= 1:
-            optimizer.zero_grad()
             print("distance of d and d_gt")
             print(np.percentile(torch.abs(d-d_true).detach().numpy(), [0,10,30,50,70,90,100]))
             imitation_loss = torch.nn.MSELoss()(d, d_true)
@@ -707,7 +707,9 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
         if cfg._gumbel_softmax:
             S_ch = F.gumbel_softmax(torch.stack([S_ch, -S_ch], dim=1), hard=True)[:, 0]
 
-        print("Selected Constraints:{}/{} Max SCH:{}".format(torch.sum(S_ch>0.5), S_ch.shape[0], torch.max(S_ch)))
+        common_target = S_ch * d_target
+        print("Selected Constraints:{}/{} Max SCH:{}".format(torch.sum(S_ch), S_ch.shape[0], torch.max(S_ch)))
+        print("Selected Violated Constraints:{}/{}".format(torch.sum(common_target), torch.sum(d_target)))
         constraint_num_list.append(int(torch.sum(S_ch>0.5)))
         special_indices=torch.LongTensor(np.where(S_ch > 0.5))
         special_idx_arr_2 = (S_ch > 0.5).float()
@@ -1315,6 +1317,7 @@ if __name__ == '__main__':
     # CHNet
     CHNet = ConstraintHealNet(kdim=cfg.kdim)
     #CHNet.load_state_dict(torch.load(prefix+"research/newtonacc/model/2021-03-28-00:24:37/CHNet_40.pt"))
+    CHNet.load_state_dict(torch.load("/home/chenzhijie/research/newtonacc/model/2021-04-03-17:19:51/CHNet_95.pt"))
 
     optimizer = optim.SGD(CHNet.parameters(), lr=cfg.TRAIN.LR, momentum=cfg.TRAIN.MOMENTUM, nesterov=True)
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer,
@@ -1411,7 +1414,7 @@ if __name__ == '__main__':
             scheduler.step()
         
     #torch.save(CHNet.state_dict(), "/home/chenzhijie/research/newtonacc/model/CHNet.pt")
-    #CHNet.load_state_dict(torch.load("/home/chenzhijie/research/newtonacc/model/2021-01-29-08:08:57/CHNet_50.pt"))
+    #CHNet.load_state_dict(torch.load("/home/chenzhijie/research/newtonacc/model/2021-04-03-17:19:51/CHNet_95.pt"))
     #
     
 

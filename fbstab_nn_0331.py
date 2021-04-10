@@ -37,7 +37,7 @@ torch.backends.cudnn.deterministic = True
 __C = edict()
 cfg = __C
 __C.TRAIN = edict()
-__C.TRAIN.LR = 0.01 #g
+__C.TRAIN.LR = 0.0001 #g
 __C.TRAIN.LR_DECAY = 0.1 #g
 __C.TRAIN.LR_STEP = [10, 20] #g
 __C.TRAIN.MOMENTUM = 0.9 #g
@@ -53,8 +53,8 @@ __C.double_attention = False
 __C._use_gt_loss = False
 __C._surrogate_func =True
 __C._gumbel_softmax = True
-__C._sample_with_decay = False
-__C._accumulate_model_update = True
+__C._sample_with_decay = True
+__C._accumulate_model_update = False
 __C._clamp_v = False
 __C._proj_dropout = True
 __C._newton_iters_prelearn = -1
@@ -382,6 +382,8 @@ class ConstraintHealNet(nn.Module):
         constant_(self.affine_bias, 0.)
         constant_(self.affine_coef, 1.)
         #init.xavier_normal(self.affine_matrix)
+        #for p in self.coord_embed.parameters():
+        #    p.requires_grad=False
 
 
     def forward(self,x,node,y,v,d,special_indices,vlt_argmax,chnet_time=None):
@@ -412,6 +414,17 @@ class ConstraintHealNet(nn.Module):
         key = key2
         print("before attention:")
         #print(torch.var(key2))
+        d = torch.sum(key.squeeze(), dim = 1)
+        
+        v_axis = (d < (-1 + 1e-6)) * (d > (-1 - 1e-6)) * (v > 1e-6).squeeze()
+        print("on v-axis num:", torch.sum(v_axis))
+        v_axis_idx = torch.LongTensor(np.where(v_axis > 0.5))
+        if (torch.sum(v_axis) > 0):
+            print("d distribution:", np.percentile(d[v_axis_idx].detach().cpu().numpy(), [0, 20, 40, 60, 80, 100]))
+            print("v distribution:", np.percentile(v[v_axis_idx].detach().cpu().numpy(), [0, 20, 40, 60, 80, 100]))
+
+        print(d.shape)
+        """
         print(np.percentile(torch.sum(key, dim = 1).detach().cpu().numpy(), [0,20,40,60,80,100]))
         print("d argmax before attention:",torch.sum(key2.squeeze(), dim = 1)[vlt_argmax])
         if cfg.logging:
@@ -434,9 +447,6 @@ class ConstraintHealNet(nn.Module):
             att_time_end = time.time()
             chnet_time[4] += att_time_end - att_time_start
 
-        """
-        Attention后d在这里区别大吗？
-        """
         #print("D after Attention:")
         #print(emb.squeeze())
         #print(emb.shape)
@@ -446,22 +456,22 @@ class ConstraintHealNet(nn.Module):
             layer_norm_start_time = time.time()
             torch.cuda.synchronize()
         self.layer_norm_d_flex = torch.nn.LayerNorm([node.shape[0]], elementwise_affine=cfg.elementwise_affine)
-        
+        """
         print("d after attention/before layer norm percentile:")
         print(np.percentile(d.detach().cpu().numpy(),[0,20,40,60,80,100]))
         print("v percentile:")
         print(np.percentile(v.detach().cpu().numpy(),[0,20,40,60,80,100]))
-        print("d at argmax:", d[vlt_argmax])
-        print("v at argmax:", v[vlt_argmax])
+        #print("d at argmax:", d[vlt_argmax])
+        #print("v at argmax:", v[vlt_argmax])
         #v_max_idx = torch.argmax(v)
         #print("IS V None???")
         #print(node[v_max_idx])
         #print(torch.sum((node[v_max_idx])))
-
+        
         #d = torch.abs(d * v.squeeze())
         #d = torch.abs(d)
-        print("MEAN ABS V:", 10 * torch.mean(torch.abs(v)))
-        v_squeeze = torch.min(v.squeeze(), 10 * torch.mean(torch.abs(v).squeeze())) #TODO: torch.mean(torch.abs(v.squeeze()))
+        #print("MEAN ABS V:", 10 * torch.mean(torch.abs(v)))
+        #v_squeeze = torch.min(v.squeeze(), 10 * torch.mean(torch.abs(v).squeeze())) #TODO: torch.mean(torch.abs(v.squeeze()))
         v_squeeze = v.squeeze()
         
         if cfg._surrogate_func:
@@ -475,9 +485,11 @@ class ConstraintHealNet(nn.Module):
         #d, _ = self.coord_att(d, d, d)
         print("d after coord embed:")
         print(np.percentile(d.detach().cpu().numpy(),[0,20,40,60,80,100]))
+        if (torch.sum(v_axis) > 0):
+            print("d on v-axis surrogate:", np.percentile(d[v_axis_idx].detach().cpu().numpy(), [0,20,40,60,80,100]))
         #d = torch.abs(d)
         
-        print("d argmax surrogate:", d[vlt_argmax])
+        #print("d argmax surrogate:", d[vlt_argmax])
 
         #d = self.layer_norm_d_flex(d.squeeze()) * self.affine_coef # + self.affine_bias
         """
@@ -508,7 +520,7 @@ class ConstraintHealNet(nn.Module):
             torch.cuda.synchronize()
             sigmoid_end_time = time.time()
             chnet_time[7] += sigmoid_end_time - sigmoid_start_time
-        return d_scores, d_percentile,chnet_time
+        return d_scores, d_percentile,chnet_time,v_axis,v_axis_idx
 
 #def CHselect(CHNet,c_graph,cgraph_edge_list,x,num_constraints,num_iters):
     """
@@ -534,8 +546,8 @@ def CHSelect(CHNet, c_feature, x_iterate, y, v, d, special_indices,vlt_argmax, c
     cuda_end_time = time.time()
     if chnet_time:
         chnet_time[5] += cuda_end_time - cuda_start_time
-    d_scores, z, chnet_time = CHNet(x_iterate, c_feature, y, v, d, special_indices,vlt_argmax,chnet_time)
-    return d_scores, z.squeeze(), chnet_time
+    d_scores, z, chnet_time, v_axis, v_axis_idx = CHNet(x_iterate, c_feature, y, v, d, special_indices,vlt_argmax,chnet_time)
+    return d_scores, z.squeeze(), chnet_time, v_axis, v_axis_idx
 
 def smw_inverse(A,U,V):
     """
@@ -664,20 +676,25 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
             if cfg._use_gt_loss:
                 loss = imitation_loss +nRLoss  #+ l1Loss #+ nRLoss #g gt_loss 
             else:
-                loss = imitation_loss + bceloss
-
-            loss.backward()
+                #loss = imitation_loss + bceloss
+                loss = bceloss
+                
+            """
+            for name,param in CHNet.named_parameters():
+                print('层:',name,param.size())
+                print('权值梯度',param.grad)
+            """
             if not cfg._accumulate_model_update:
+                optimizer.zero_grad()
+                loss.backward()
                 print("Instantaneous Model Update.")
-                """
-                for name,param in CHNet.named_parameters():
-                    print('层:',name,param.size())
-                    print('权值梯度',param.grad)
-                """
+                
                 total_norm = torch.nn.utils.clip_grad_norm(CHNet.parameters(), 1e2)
                 print("Back Propagating....")
                 print("Gradient TOTAL NORM:", total_norm)
                 optimizer.step()
+            else:
+                loss.backward()
 
             r1.detach_()
             r3.detach_()
@@ -695,9 +712,12 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
         # CHNet for finding constraints
         vlt_argmax = torch.argmax(torch.abs(r3).squeeze())
         print("Selecting Constraints...")
-        d_scores, S_ch, _ = CHSelect(CHNet, c_feature, x_iterate, y, v, dz,special_indices,vlt_argmax)
+        d_scores, S_ch, _, v_axis, v_axis_idx = CHSelect(CHNet, c_feature, x_iterate, y, v, dz,special_indices,vlt_argmax)
         d_target = (all_vlt > 1e-6).squeeze().float().detach()
         print("violated num in r3:",torch.sum(d_target))
+        print("violated num on v-axis:", torch.sum(d_target * v_axis.squeeze().float()))
+        if (torch.sum(v_axis) > 0):
+            print("vlt on v-axis:", np.percentile(all_vlt[v_axis_idx].detach().numpy(), [0,20,40,60,80,100]))
         #S_ch = torch.zeros(S_ch.shape)
         #S_ch_idx = torch.multinomial(torch.ones(S_ch.shape), int(S_ch.shape[0]//2))
         #S_ch[S_ch_idx] = 1
@@ -709,7 +729,7 @@ def pfb(qp,z, _lambda,v, sigma,inner_tol, alpha, niters, max_iters, inverse_time
 
         common_target = S_ch * d_target
         print("Selected Constraints:{}/{} Max SCH:{}".format(torch.sum(S_ch), S_ch.shape[0], torch.max(S_ch)))
-        print("Selected Violated Constraints:{}/{}".format(torch.sum(common_target), torch.sum(d_target)))
+        print("Selected Violated Constraints:{}/{} Rate:{}".format(torch.sum(common_target), torch.sum(d_target), torch.sum(common_target) / torch.sum(d_target)))
         constraint_num_list.append(int(torch.sum(S_ch>0.5)))
         special_indices=torch.LongTensor(np.where(S_ch > 0.5))
         special_idx_arr_2 = (S_ch > 0.5).float()
@@ -1316,10 +1336,13 @@ if __name__ == '__main__':
     
     # CHNet
     CHNet = ConstraintHealNet(kdim=cfg.kdim)
-    #CHNet.load_state_dict(torch.load(prefix+"research/newtonacc/model/2021-03-28-00:24:37/CHNet_40.pt"))
-    CHNet.load_state_dict(torch.load("/home/chenzhijie/research/newtonacc/model/2021-04-03-17:19:51/CHNet_95.pt"))
-
-    optimizer = optim.SGD(CHNet.parameters(), lr=cfg.TRAIN.LR, momentum=cfg.TRAIN.MOMENTUM, nesterov=True)
+    CHNet.load_state_dict(torch.load(prefix+"research/newtonacc/model/2021-04-10-00:15:26/CHNet_100.pt"))
+    #CHNet.load_state_dict(torch.load("/home/chenzhijie/research/newtonacc/model/2021-04-05-23:34:27/CHNet_5.pt"))
+    #CHNet.multihead_att_2._reset_parameters()
+    #filter(lambda p: p.requires_grad, model.parameters())
+    #optimizer = optim.Adam(filter(lambda p: p.requires_grad, CHNet.parameters()), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=1e-5)
+    optimizer = optim.Adam(CHNet.parameters(), lr=cfg.TRAIN.LR, betas=(0.9, 0.999), eps=1e-08, weight_decay=1e-5)
+    #optimizer = optim.Adam(CHNet.parameters(), lr=cfg.TRAIN.LR, momentum=cfg.TRAIN.MOMENTUM, nesterov=True)
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer,
                                                milestones=cfg.TRAIN.LR_STEP,
                                                gamma=cfg.TRAIN.LR_DECAY)
@@ -1342,7 +1365,7 @@ if __name__ == '__main__':
     imit_loss_list_arr = []
     bce_loss_list_arr = []
 
-    
+    torch.save(CHNet.state_dict(), prefix + "research/newtonacc/model/"+start_time_str+"/CHNet_0.pt")
     if cfg.train:
         for epoch in range(100):
             cfg.tf_probs = set_epoch(epoch)
